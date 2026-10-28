@@ -106,6 +106,7 @@ class Advisory(BaseModel):
     aliases: list[str]
     summary: str
     severity: Severity
+    cvss_score: float | None
     disclosed: date
     fix_released: date | None
     fixed_versions: list[str]
@@ -363,11 +364,13 @@ class Evidence:
                 if (stamp := published.get(version)) is not None and known_by(stamp, as_of)
             )
             fix_released = fixes[0][0] if fixes else None
+            cvss_scores = [scored[0] for record in live if (scored := _cvss(record))]
             advisory = Advisory(
                 id=_primary_id(live),
                 aliases=sorted(_all_ids(live) - {_primary_id(live)}),
                 summary=next((r.summary for r in live if r.summary), ""),
                 severity=max(map(_severity, live), key=lambda s: s.rank),
+                cvss_score=max(cvss_scores, default=None),
                 disclosed=disclosed.date(),
                 fix_released=fix_released.date() if fix_released else None,
                 fixed_versions=[version for _, version in fixes],
@@ -495,8 +498,17 @@ def _primary_id(records: Iterable[OsvVulnerability]) -> str:
 
 
 def _severity(record: OsvVulnerability) -> Severity:
+    """The record's severity label (GHSA's), else the rating of its highest CVSS score."""
     label = record.database_specific.severity if record.database_specific else None
-    return _SEVERITY_LABELS.get((label or "").upper(), Severity.UNKNOWN)
+    if (labelled := _SEVERITY_LABELS.get((label or "").upper())) is not None:
+        return labelled
+    scored = _cvss(record)
+    return _SEVERITY_LABELS.get(scored[1].upper(), Severity.UNKNOWN) if scored else Severity.UNKNOWN
+
+
+def _cvss(record: OsvVulnerability) -> tuple[float, str] | None:
+    """The record's highest CVSS base score and its rating, if it has a vector that scores."""
+    return max((scored for entry in record.severity if (scored := entry.cvss())), default=None)
 
 
 def _affected_entries(

@@ -154,14 +154,14 @@ def widget() -> FakeSources:
             "3.0.0": "2023-02-01T00:00:00Z",
         },
         vulns=[
-            _vuln(
+            vuln(
                 "PYSEC-2021-1",
                 "2021-05-01T00:00:00Z",
                 aliases=["CVE-2021-0001", "GHSA-aaaa-aaaa-aaaa"],
                 fixed="2.1.0",
                 versions=["1.0.0", "1.1.0", "2.0.0"],
             ),
-            _vuln(
+            vuln(
                 "GHSA-aaaa-aaaa-aaaa",
                 "2022-03-01T00:00:00Z",
                 aliases=["CVE-2021-0001", "PYSEC-2021-1"],
@@ -170,17 +170,15 @@ def widget() -> FakeSources:
                 summary="Widget parser overflow",
                 details="Parsing a crafted widget overflows a buffer.",
             ),
-            _vuln(
+            vuln(
                 "GHSA-cccc-cccc-cccc",
                 "2021-10-01T00:00:00Z",
                 severity="MODERATE",
                 fixed="3.0.0",
                 versions=["2.0.0", "2.1.0"],
             ),
-            _vuln(
-                "GHSA-bbbb-bbbb-bbbb", "2022-06-01T00:00:00Z", severity="CRITICAL", fixed="3.0.0"
-            ),
-            _vuln(
+            vuln("GHSA-bbbb-bbbb-bbbb", "2022-06-01T00:00:00Z", severity="CRITICAL", fixed="3.0.0"),
+            vuln(
                 "GHSA-dddd-dddd-dddd",
                 "2021-02-01T00:00:00Z",
                 severity="LOW",
@@ -199,7 +197,7 @@ def widget() -> FakeSources:
     )
 
 
-def _vuln(
+def vuln(
     vuln_id: str,
     published: str,
     *,
@@ -210,7 +208,9 @@ def _vuln(
     withdrawn: str | None = None,
     summary: str = "",
     details: str = "",
+    cvss: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, object]:
+    """An OSV record for widget. ``severity`` is GHSA's label; ``cvss`` holds (type, vector)."""
     events: list[dict[str, str]] = [{"introduced": "0"}]
     if fixed:
         events.append({"fixed": fixed})
@@ -230,6 +230,8 @@ def _vuln(
     }
     if severity:
         record["database_specific"] = {"severity": severity}
+    if cvss:
+        record["severity"] = [{"type": kind, "score": vector} for kind, vector in cvss]
     if withdrawn:
         record["withdrawn"] = withdrawn
     return record

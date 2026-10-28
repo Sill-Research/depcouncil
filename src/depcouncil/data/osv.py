@@ -4,9 +4,10 @@ https://google.github.io/osv.dev/post-v1-query/
 """
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, cast
 
 import httpx
+from cvss import CVSS2, CVSS3, CVSS4, CVSSError  # pyright: ignore[reportMissingTypeStubs]
 from pydantic import BeforeValidator
 
 from depcouncil.data.http import SourceModel, parse, request
@@ -15,6 +16,7 @@ from depcouncil.schemas import PackageRef
 SOURCE = "OSV"
 _QUERY_URL = "https://api.osv.dev/v1/query"
 _MAX_PAGES = 10
+_CVSS = {"CVSS_V2": CVSS2, "CVSS_V3": CVSS3, "CVSS_V4": CVSS4}
 
 
 def _text_or_none(value: object) -> object:
@@ -49,6 +51,27 @@ class OsvDatabaseSpecific(SourceModel):
     nvd_published_at: Annotated[datetime | None, BeforeValidator(_text_or_none)] = None
 
 
+class OsvSeverity(SourceModel):
+    type: str = ""
+    score: str = ""
+
+    def cvss(self) -> tuple[float, str] | None:
+        """The CVSS base score and its rating ("Low" to "Critical"), or ``None`` when this is not
+        a CVSS vector that can be scored."""
+        calculator = _CVSS.get(self.type)
+        if calculator is None:
+            return None
+        try:
+            vector = calculator(self.score)
+        except CVSSError:
+            return None
+        if vector.base_score is None:
+            return None
+        # The library is untyped; `severities()` gives the base, temporal and environmental ratings.
+        rating = cast("str", vector.severities()[0])
+        return float(vector.base_score), rating
+
+
 class OsvVulnerability(SourceModel):
     id: str
     summary: str = ""
@@ -56,6 +79,7 @@ class OsvVulnerability(SourceModel):
     aliases: list[str] = []
     published: datetime | None = None
     withdrawn: datetime | None = None
+    severity: list[OsvSeverity] = []
     database_specific: OsvDatabaseSpecific | None = None
     affected: list[OsvAffected] = []
 

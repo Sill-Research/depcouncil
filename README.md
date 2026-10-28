@@ -27,8 +27,8 @@ pypi:requests ───►├─ security analyst ─────  vulnerability
 ```
 
 The data comes from three free sources: [deps.dev](https://deps.dev) (releases, licenses,
-dependency graphs, OpenSSF Scorecard), [OSV](https://osv.dev) (security advisories) and the
-GitHub API (commit history).
+dependency graphs, OpenSSF Scorecard), [OSV](https://osv.dev) (security advisories, rated by
+GHSA's severity or, failing that, their CVSS score) and the GitHub API (commit history).
 
 ## Point-in-time discipline
 
@@ -213,5 +213,5 @@ uv run pyright          # strict on src/
 
 ## Next steps
 
-- **More signal.** Issue and PR responsiveness (needs point-in-time issue queries), CVSS
-  scoring for advisories that lack a GHSA severity, and repositories hosted outside GitHub.
+- **More signal.** Issue and PR responsiveness (needs point-in-time issue queries), and
+  repositories hosted outside GitHub.

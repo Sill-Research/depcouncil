@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "cvss>=3.6",
     "httpx>=0.28.1",
     "pydantic>=2.11",
     "pydantic-ai-slim[anthropic,openai]>=2.62.0",

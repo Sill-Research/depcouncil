@@ -7,12 +7,14 @@ import pytest
 from depcouncil import Evidence, PackageRef
 from depcouncil.evidence import ProjectSnapshot, ScorecardReport, Severity, Withheld
 from depcouncil.timeline import today
-from tests.fakes import FakeSources
+from tests.fakes import FakeSources, vuln
 
 pytestmark = pytest.mark.anyio
 
 WIDGET = PackageRef.parse("pypi:widget")
 AS_OF = date(2022, 1, 1)
+CRITICAL_V3 = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"  # 9.8
+MODERATE_V4 = "CVSS:4.0/AV:N/AC:H/AT:N/PR:L/UI:A/VC:N/VI:N/VA:H/SC:N/SI:N/SA:H"  # 6.8
 
 
 async def test_releases_stop_at_the_analysis_date(evidence: Evidence) -> None:
@@ -51,6 +53,42 @@ async def test_fixes_and_advisories_after_the_date_are_hidden(evidence: Evidence
     assert unfixed.fixed_versions == []
     assert unfixed.affects_latest_release is True
     assert (record.unfixed, record.affecting_latest_release) == (1, 1)
+
+
+async def test_cvss_rates_advisories_that_lack_a_ghsa_severity(
+    evidence: Evidence, sources: FakeSources
+) -> None:
+    sources.vulns = [
+        vuln("RUSTSEC-2021-1", "2021-01-01T00:00:00Z", cvss=(("CVSS_V3", CRITICAL_V3),)),
+        vuln(
+            "RUSTSEC-2021-2",
+            "2021-02-01T00:00:00Z",
+            cvss=(("CVSS_V4", MODERATE_V4), ("CVSS_V3", "not a vector")),
+        ),
+        vuln(
+            "GHSA-eeee-eeee-eeee",
+            "2021-03-01T00:00:00Z",
+            severity="LOW",
+            cvss=(("CVSS_V3", CRITICAL_V3),),
+        ),
+        vuln("PYSEC-2021-9", "2021-04-01T00:00:00Z"),
+    ]
+
+    by_id = {a.id: a for a in await evidence.known_advisories(WIDGET, AS_OF)}
+
+    assert (by_id["RUSTSEC-2021-1"].severity, by_id["RUSTSEC-2021-1"].cvss_score) == (
+        Severity.CRITICAL,
+        9.8,
+    )
+    assert (by_id["RUSTSEC-2021-2"].severity, by_id["RUSTSEC-2021-2"].cvss_score) == (
+        Severity.MODERATE,
+        6.8,
+    )
+    assert by_id["GHSA-eeee-eeee-eeee"].severity is Severity.LOW  # GHSA's own label wins
+    assert (by_id["PYSEC-2021-9"].severity, by_id["PYSEC-2021-9"].cvss_score) == (
+        Severity.UNKNOWN,
+        None,
+    )
 
 
 async def test_withdrawn_advisories_count_only_until_withdrawn(evidence: Evidence) -> None:
