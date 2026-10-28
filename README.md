@@ -28,8 +28,8 @@ pypi:requests ───►├─ security analyst ─────  vulnerability
 
 The data comes from three free sources: [deps.dev](https://deps.dev) (releases, licenses,
 dependency graphs, OpenSSF Scorecard), [OSV](https://osv.dev) (security advisories, rated by
-GHSA's severity or, failing that, their CVSS score) and the GitHub API (commit history, and
-issue and pull request search).
+GHSA's severity or, failing that, their CVSS score), and the GitHub or GitLab API, wherever the
+source lives (commit history; on GitHub, issue and pull request search too).
 
 ## Point-in-time discipline
 
@@ -39,8 +39,8 @@ data layer, not left to the prompt:
 - **Tools never take a date or package argument.** They read both from `RunContext.deps`
   (`agents/tools.py`), so the model can't ask for data past the analysis date.
 - **Releases, commits, issues and advisories are filtered to the date** (`timeline.py`,
-  `evidence.py`). GitHub is queried with `until=<date>`, every date in an issue search is bounded
-  by it, and a fix counts only if its release shipped by then.
+  `evidence.py`). GitHub and GitLab are queried with `until=<date>`, every date in an issue
+  search is bounded by it, and a fix counts only if its release shipped by then.
 - **One vulnerability, one record, dated by its earliest disclosure.** OSV lists the same CVE
   under several ids (GHSA, PYSEC, …) with different publish dates. The records are merged
   through their aliases, and the merged advisory is dated by its earliest record.
@@ -114,6 +114,7 @@ Set these in the environment or in `.env`:
 | `DEPCOUNCIL_MAX_TOOL_ROUNDS` | `4` | Turns an analyst may spend on tools before it must report |
 | `DEPCOUNCIL_MEMORY_PATH` | – | JSON Lines file for the council's [memory](#memory); off when unset |
 | `GITHUB_TOKEN` | – | Raises GitHub's limits from 60 to 5,000 requests an hour, and from 10 to 30 searches a minute |
+| `GITLAB_TOKEN` | – | Adds the archive flag and open issue count to GitLab project snapshots |
 
 Models are any Pydantic AI `provider:model` string (`openai:gpt-5`, `google-gla:...` with the
 `google` extra, `ollama:...`), and the provider's usual API-key variable applies.
@@ -196,7 +197,7 @@ src/depcouncil/
   settings.py     DEPCOUNCIL_* configuration (pydantic-settings)
   timeline.py     what was knowable on a date
   anonymity.py    what names a package, and how the name is kept from the debaters and chair
-  data/           raw clients: deps.dev, OSV, GitHub (responses parsed into Pydantic models)
+  data/           raw clients: deps.dev, OSV, GitHub, GitLab (responses parsed into Pydantic models)
   evidence.py     point-in-time facts built from the raw data; the only place dates are applied
   agents/         deps, data tools, analysts, advocate/skeptic/chair, reflector
   council.py      the workflow
@@ -216,4 +217,9 @@ uv run pyright          # strict on src/
 
 ## Next steps
 
-- **More signal.** Repositories hosted outside GitHub.
+- **A point-in-time Scorecard** from OpenSSF's weekly history, so historical reviews needn't
+  withhold it.
+- **More maintenance signal:** time to first response on issues, and issue activity for GitLab
+  repositories.
+- **More code hosts:** Bitbucket and self-hosted GitLab instances.
+- **Download counts** for present-day reviews.

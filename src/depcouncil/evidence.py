@@ -28,9 +28,18 @@ from typing import Any, Literal, cast
 import httpx
 from pydantic import BaseModel
 
-from depcouncil.data import DepsDevClient, GitHubClient, OsvClient, SourceUnavailable
+from depcouncil.data import (
+    CodeHost,
+    DepsDevClient,
+    GitHubClient,
+    GitLabClient,
+    OsvClient,
+    RepoRef,
+    SourceUnavailable,
+)
 from depcouncil.data.depsdev import DependencyGraph, Package, VersionDetail
-from depcouncil.data.github import IssueItem, IssueSearch, Repository, search_range
+from depcouncil.data.github import IssueItem, IssueSearch, search_range
+from depcouncil.data.hosts import HostRepository
 from depcouncil.data.osv import OsvAffected, OsvVulnerability
 from depcouncil.schemas import PackageRef, normalize_name
 from depcouncil.settings import Settings
@@ -50,6 +59,7 @@ ISSUES_NOTE = (
     "closing, so one closed by the analysis date but reopened later counts as open on it."
 )
 ISSUE_SAMPLE = 100
+_COUNT_LIMIT_NOTE = "{host} counts commits only up to {limit}; there were at least that many."
 _SNAPSHOT_WITHHELD = (
     "Present-day snapshot, not knowable on {as_of}; withheld from this historical review."
 )
@@ -149,6 +159,7 @@ class CommitActivity(BaseModel):
     top_author_share: float | None
     sampled_commits: int
     repository_created: date | None
+    note: str | None = None
 
 
 class IssueFlow(BaseModel):
@@ -190,8 +201,8 @@ class ProjectSnapshot(BaseModel):
     repository: str
     stars: int
     forks: int
-    open_issues: int
-    archived: bool
+    open_issues: int | None
+    archived: bool | None
     latest_release_deprecated: bool
     deprecation_reason: str | None
 
@@ -210,10 +221,20 @@ class Evidence:
     concurrent analysts asking for the same record share one request.
     """
 
-    def __init__(self, http: httpx.AsyncClient, *, github_token: str | None = None) -> None:
+    def __init__(
+        self,
+        http: httpx.AsyncClient,
+        *,
+        github_token: str | None = None,
+        gitlab_token: str | None = None,
+    ) -> None:
         self._depsdev = DepsDevClient(http)
         self._osv = OsvClient(http)
         self._github = GitHubClient(http, token=github_token)
+        self._hosts: dict[str, CodeHost] = {
+            "github.com": self._github,
+            "gitlab.com": GitLabClient(http, token=gitlab_token),
+        }
         self._memo: dict[tuple[str, ...], asyncio.Future[Any]] = {}
 
     async def known_releases(self, pkg: PackageRef, as_of: date) -> list[Release]:
@@ -281,19 +302,21 @@ class Evidence:
         self, pkg: PackageRef, as_of: date, *, window_days: int = 365
     ) -> CommitActivity:
         repo = await self._require_repository(pkg, as_of)
+        host = self._hosts[repo.host]
         end = cutoff(as_of)
         start = end - timedelta(days=window_days)
         last, count, sample, meta = await asyncio.gather(
-            self._github.last_commit(repo, until=end),
-            self._github.count_commits(repo, since=start, until=end),
-            self._github.recent_commits(repo, since=start, until=end),
+            host.last_commit(repo.path, until=end),
+            host.count_commits(repo.path, since=start, until=end),
+            host.recent_commits(repo.path, since=start, until=end),
             self._repository(repo),
         )
+        limit = host.commit_count_limit
         authors = Counter(commit.author_key for commit in sample)
         last_date = last.committed_at.date() if last and last.committed_at else None
         return CommitActivity(
             as_of=as_of,
-            repository=repo,
+            repository=str(repo),
             window_days=window_days,
             commits_in_window=count,
             last_commit=last_date,
@@ -302,22 +325,30 @@ class Evidence:
             top_author_share=round(max(authors.values()) / len(sample), 2) if sample else None,
             sampled_commits=len(sample),
             repository_created=meta.created_at.date() if meta.created_at else None,
+            note=_COUNT_LIMIT_NOTE.format(host=repo.host, limit=limit)
+            if limit is not None and count >= limit
+            else None,
         )
 
     async def issue_activity(
         self, pkg: PackageRef, as_of: date, *, window_days: int = 365
     ) -> IssueActivity:
         """Issues and pull requests opened in the window before the date, how many of them were
-        resolved by the date and how fast, and how many of all of them were open on it."""
+        resolved by the date and how fast, and how many of all of them were open on it. Read
+        from GitHub's issue search, so only for repositories on GitHub."""
         repo = await self._require_repository(pkg, as_of)
+        if repo.host != "github.com":
+            raise SourceUnavailable(
+                repo.host, "issue activity is read only for GitHub repositories"
+            )
         start = cutoff(as_of) - timedelta(days=window_days)
         issues, pulls = await asyncio.gather(
-            self._issue_flow(repo, "issue", as_of, start=start),
-            self._issue_flow(repo, "pr", as_of, start=start),
+            self._issue_flow(repo.path, "issue", as_of, start=start),
+            self._issue_flow(repo.path, "pr", as_of, start=start),
         )
         return IssueActivity(
             as_of=as_of,
-            repository=repo,
+            repository=str(repo),
             window_days=window_days,
             issues=issues,
             pull_requests=pulls,
@@ -327,13 +358,14 @@ class Evidence:
         """License and release integrity of the latest release by the date (fixed at publish)."""
         current = await self._current_release(pkg, as_of)
         detail = await self._version_detail(pkg, current.version)
+        repo = detail.source_repository()
         return VersionMetadata(
             version=current.version,
             published=current.published,
             licenses=detail.licenses,
             slsa_provenance=bool(detail.slsa_provenances),
             attestations=len(detail.attestations),
-            source_repository=detail.source_repository(),
+            source_repository=str(repo) if repo else None,
         )
 
     async def dependency_footprint(self, pkg: PackageRef, as_of: date) -> DependencyFootprint:
@@ -361,7 +393,7 @@ class Evidence:
         version = next((v for v in package.versions if v.version == current.version), None)
         deprecated = version is not None and version.is_deprecated
         return ProjectSnapshot(
-            repository=repo,
+            repository=str(repo),
             stars=meta.stargazers_count,
             forks=meta.forks_count,
             open_issues=meta.open_issues_count,
@@ -377,12 +409,12 @@ class Evidence:
         if is_historical(as_of):
             return Withheld(withheld=_SNAPSHOT_WITHHELD.format(as_of=as_of))
         repo = await self._require_repository(pkg, as_of)
-        project = await self._once(("project", repo), lambda: self._depsdev.project(repo))
+        project = await self._once(("project", str(repo)), lambda: self._depsdev.project(repo))
         if project.scorecard is None:
             raise SourceUnavailable("deps.dev", f"no OpenSSF Scorecard for {repo}")
         card = project.scorecard
         return ScorecardReport(
-            repository=repo,
+            repository=str(repo),
             overall_score=card.overall_score,
             measured=card.date.date() if card.date else None,
             checks={check.name: check.score for check in card.checks},
@@ -462,15 +494,18 @@ class Evidence:
             raise SourceUnavailable("deps.dev", f"no release of {pkg} was published by {as_of}")
         return next((r for r in reversed(releases) if not r.prerelease), releases[-1])
 
-    async def source_repository(self, pkg: PackageRef, as_of: date) -> str | None:
-        """The GitHub ``owner/name`` that the latest release by the date names as its source."""
+    async def source_repository(self, pkg: PackageRef, as_of: date) -> RepoRef | None:
+        """The repository that the latest release by the date names as its source."""
         current = await self._current_release(pkg, as_of)
         return (await self._version_detail(pkg, current.version)).source_repository()
 
-    async def _require_repository(self, pkg: PackageRef, as_of: date) -> str:
+    async def _require_repository(self, pkg: PackageRef, as_of: date) -> RepoRef:
+        """The package's source repository, on a host this project can read."""
         repo = await self.source_repository(pkg, as_of)
+        if repo is not None and repo.host not in self._hosts:
+            raise SourceUnavailable(repo.host, f"repositories on {repo.host} can't be read yet")
         if repo is None:
-            raise SourceUnavailable("GitHub", f"no GitHub source repository is linked to {pkg}")
+            raise SourceUnavailable("deps.dev", f"no source repository is linked to {pkg}")
         return repo
 
     async def _package(self, pkg: PackageRef) -> Package:
@@ -489,8 +524,10 @@ class Evidence:
     async def _osv_records(self, pkg: PackageRef) -> list[OsvVulnerability]:
         return await self._once(("osv", str(pkg)), lambda: self._osv.vulnerabilities(pkg))
 
-    async def _repository(self, repo: str) -> Repository:
-        return await self._once(("repository", repo), lambda: self._github.repository(repo))
+    async def _repository(self, repo: RepoRef) -> HostRepository:
+        return await self._once(
+            ("repository", str(repo)), lambda: self._hosts[repo.host].repository(repo.path)
+        )
 
     async def _search(self, repo: str, query: str, *, limit: int = 1) -> IssueSearch:
         return await self._once(
@@ -512,12 +549,13 @@ async def open_evidence(
     settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None
 ) -> AsyncGenerator[Evidence]:
     """An ``Evidence`` over a fresh HTTP client, closed on exit. Tests pass a mock ``transport``."""
-    token = settings.github_token.get_secret_value() if settings.github_token else None
+    github_token = settings.github_token.get_secret_value() if settings.github_token else None
+    gitlab_token = settings.gitlab_token.get_secret_value() if settings.gitlab_token else None
     headers = {"User-Agent": f"depcouncil/{installed_version('depcouncil')}"}
     async with httpx.AsyncClient(
         timeout=settings.http_timeout, headers=headers, transport=transport, follow_redirects=True
     ) as http:
-        yield Evidence(http, github_token=token)
+        yield Evidence(http, github_token=github_token, gitlab_token=gitlab_token)
 
 
 def _is_prerelease(version: str) -> bool:

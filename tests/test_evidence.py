@@ -3,10 +3,12 @@
 import re
 from datetime import date
 
+import httpx
 import pytest
 
 from depcouncil import Evidence, PackageRef
 from depcouncil import evidence as evidence_module
+from depcouncil.data import SourceUnavailable, gitlab
 from depcouncil.evidence import IssueFlow, ProjectSnapshot, ScorecardReport, Severity, Withheld
 from depcouncil.timeline import today
 from tests.fakes import FakeSources, vuln
@@ -157,6 +159,70 @@ async def test_issue_activity_counts_past_its_sample(
     # The one sampled issue is still open, so the share comes from a separate count.
     assert (activity.issues.sampled, activity.issues.share_resolved_by_date) == (1, 0.33)
     assert activity.issues.median_days_to_resolve is None
+
+
+async def test_commit_activity_reads_a_gitlab_repository(
+    evidence: Evidence, sources: FakeSources
+) -> None:
+    sources.repo_host = "gitlab.com"
+
+    activity = await evidence.commit_activity(WIDGET, AS_OF, window_days=365)
+
+    assert activity.repository == "gitlab.com/acme/widget"
+    assert (activity.commits_in_window, activity.last_commit) == (3, date(2021, 12, 20))
+    assert (activity.authors_in_window, activity.top_author_share) == (2, 0.67)
+    assert activity.note is None
+    commit_queries = [r for r in sources.requests if r.url.path.endswith("/repository/commits")]
+    assert {r.url.params["until"] for r in commit_queries} == {"2022-01-01T23:59:59Z"}
+    assert not any(r.url.host == "api.github.com" for r in sources.requests)
+
+
+async def test_gitlab_commit_counts_stop_at_the_page_limit(
+    evidence: Evidence, sources: FakeSources, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sources.repo_host = "gitlab.com"
+    monkeypatch.setattr(gitlab, "_PAGE_SIZE", 1)
+    monkeypatch.setattr(gitlab, "_MAX_PAGES", 2)
+
+    activity = await evidence.commit_activity(WIDGET, AS_OF, window_days=365)
+
+    assert activity.commits_in_window == 2
+    assert activity.note and "at least" in activity.note
+
+
+async def test_gitlab_snapshots_need_a_token_for_the_archive_flag(sources: FakeSources) -> None:
+    sources.repo_host = "gitlab.com"
+    snapshots: dict[str | None, object] = {}
+    for token in (None, "glpat-test"):
+        async with httpx.AsyncClient(transport=sources.transport()) as http:
+            snapshots[token] = await Evidence(http, gitlab_token=token).project_snapshot(
+                WIDGET, today()
+            )
+
+    anonymous, signed_in = snapshots[None], snapshots["glpat-test"]
+    assert isinstance(anonymous, ProjectSnapshot) and isinstance(signed_in, ProjectSnapshot)
+    assert (anonymous.stars, anonymous.archived, anonymous.open_issues) == (300, None, None)
+    assert (signed_in.archived, signed_in.open_issues) == (False, 5)
+
+
+async def test_repositories_elsewhere_are_named_but_not_read(
+    evidence: Evidence, sources: FakeSources
+) -> None:
+    sources.repo_host = "bitbucket.org"
+
+    metadata = await evidence.version_metadata(WIDGET, AS_OF)
+    assert metadata.source_repository == "bitbucket.org/acme/widget"
+    with pytest.raises(SourceUnavailable, match=r"bitbucket\.org"):
+        await evidence.commit_activity(WIDGET, AS_OF)
+
+
+async def test_issue_activity_is_read_only_from_github(
+    evidence: Evidence, sources: FakeSources
+) -> None:
+    sources.repo_host = "gitlab.com"
+
+    with pytest.raises(SourceUnavailable, match="only for GitHub"):
+        await evidence.issue_activity(WIDGET, AS_OF)
 
 
 async def test_present_day_snapshots_are_withheld_from_historical_runs(evidence: Evidence) -> None:

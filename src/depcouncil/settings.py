@@ -48,6 +48,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("DEPCOUNCIL_GITHUB_TOKEN", "GITHUB_TOKEN"),
         description="Raises GitHub's limit from 60 to 5,000 requests an hour.",
     )
+    gitlab_token: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DEPCOUNCIL_GITLAB_TOKEN", "GITLAB_TOKEN"),
+        description="Adds the archive flag and open issue count to GitLab project snapshots.",
+    )
     http_timeout: float = Field(
         default=30.0, gt=0, description="Seconds before a data request fails."
     )

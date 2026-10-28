@@ -84,6 +84,8 @@ class IssueSearch(SourceModel):
 
 
 class GitHubClient:
+    commit_count_limit: int | None = None
+
     def __init__(self, http: httpx.AsyncClient, *, token: str | None = None) -> None:
         self._http = http
         self._headers = {

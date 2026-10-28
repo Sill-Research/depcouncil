@@ -27,7 +27,8 @@ class FakeIssue:
 class FakeSources:
     """Canned responses for ``pypi:widget``.
 
-    The GitHub commits endpoint honours ``since``, ``until`` and paging, and the issue search
+    The repository lives on ``repo_host``, GitHub or GitLab; the other host knows nothing of
+    it. The commits endpoints honour ``since``, ``until`` and paging, and GitHub's issue search
     its ``is``, ``created``, ``closed`` and ``merged`` qualifiers, the way the real ones do, so
     tests check the window the evidence layer asks for instead of trusting it.
     """
@@ -39,6 +40,7 @@ class FakeSources:
     dependencies: list[tuple[str, str]] = field(default_factory=list)  # (name, DIRECT|INDIRECT)
     issues: list[FakeIssue] = field(default_factory=list)
     repo: str | None = REPO
+    repo_host: str = "github.com"
     requests: list[httpx.Request] = field(default_factory=list)
 
     def transport(self) -> httpx.MockTransport:
@@ -52,8 +54,10 @@ class FakeSources:
                 return self._depsdev(path)
             case "api.osv.dev":
                 return httpx.Response(200, json={"vulns": self.vulns})
-            case "api.github.com":
+            case "api.github.com" if self.repo_host == "github.com":
                 return self._github(request, path)
+            case "gitlab.com" if self.repo_host == "gitlab.com":
+                return self._gitlab(request, path)
             case _:
                 return httpx.Response(404)
 
@@ -78,7 +82,12 @@ class FakeSources:
                 ]
                 return httpx.Response(200, json={"nodes": nodes})
             related = (
-                [{"projectKey": {"id": f"github.com/{self.repo}"}, "relationType": "SOURCE_REPO"}]
+                [
+                    {
+                        "projectKey": {"id": f"{self.repo_host}/{self.repo}"},
+                        "relationType": "SOURCE_REPO",
+                    }
+                ]
                 if self.repo
                 else []
             )
@@ -91,15 +100,14 @@ class FakeSources:
                     "relatedProjects": related,
                 },
             )
-        if self.repo and path == f"/v3/projects/github.com/{self.repo}":
+        if self.repo and path == f"/v3/projects/{self.repo_host}/{self.repo}":
             scorecard = {
                 "date": "2026-01-01T00:00:00Z",
                 "overallScore": 7.5,
                 "checks": [{"name": "Maintained", "score": 10}],
             }
-            return httpx.Response(
-                200, json={"projectKey": {"id": f"github.com/{self.repo}"}, "scorecard": scorecard}
-            )
+            key = {"id": f"{self.repo_host}/{self.repo}"}
+            return httpx.Response(200, json={"projectKey": key, "scorecard": scorecard})
         return httpx.Response(404)
 
     def _github(self, request: httpx.Request, path: str) -> httpx.Response:
@@ -149,6 +157,45 @@ class FakeSources:
             url = f"https://api.github.com/repos/{self.repo}/commits?per_page={per_page}"
             headers["link"] = f'<{url}&page={last_page}>; rel="last"'
         return httpx.Response(200, json=body, headers=headers)
+
+    def _gitlab(self, request: httpx.Request, path: str) -> httpx.Response:
+        if path == f"/api/v4/projects/{self.repo}":
+            project: dict[str, object] = {
+                "path_with_namespace": self.repo,
+                "created_at": "2019-01-01T00:00:00Z",
+                "star_count": 300,
+                "forks_count": 20,
+            }
+            if "private-token" in request.headers:  # GitLab shows these only when signed in
+                project |= {"archived": False, "open_issues_count": 5}
+            return httpx.Response(200, json=project)
+        if path != f"/api/v4/projects/{self.repo}/repository/commits":
+            return httpx.Response(404)
+        params = request.url.params
+        until = _time(params["until"])  # GitLab's `until` includes its own second
+        since = _time(params["since"]) if "since" in params else None
+        matching = sorted(
+            (
+                (stamp, author)
+                for stamp, author in self.commits
+                if _time(stamp) <= until and (since is None or _time(stamp) >= since)
+            ),
+            reverse=True,
+        )
+        per_page, page = int(params["per_page"]), int(params.get("page", "1"))
+        body = [
+            {
+                "id": f"{stamp}-{author}",
+                "author_name": author,
+                "author_email": f"{author}@example.com",
+                "committed_date": stamp,
+            }
+            for stamp, author in matching[(page - 1) * per_page : page * per_page]
+        ]
+        more = page * per_page < len(matching)
+        return httpx.Response(
+            200, json=body, headers={"x-next-page": str(page + 1) if more else ""}
+        )
 
     def _search(self, request: httpx.Request) -> httpx.Response:
         repo, *terms = request.url.params["q"].split()

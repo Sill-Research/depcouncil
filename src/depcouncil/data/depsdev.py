@@ -10,6 +10,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
+from depcouncil.data.hosts import RepoRef
 from depcouncil.data.http import SourceModel, parse, request
 from depcouncil.schemas import PackageRef
 
@@ -63,12 +64,11 @@ class VersionDetail(_DepsDevModel):
     slsa_provenances: list[_Opaque] = []
     attestations: list[_Opaque] = []
 
-    def source_repository(self) -> str | None:
-        """The GitHub ``owner/name`` the registry metadata names as this version's source."""
+    def source_repository(self) -> RepoRef | None:
+        """The repository the registry metadata names as this version's source, on any host."""
         for project in self.related_projects:
-            key = project.project_key.id
-            if project.relation_type == "SOURCE_REPO" and key.startswith("github.com/"):
-                return key.removeprefix("github.com/")
+            if project.relation_type == "SOURCE_REPO":
+                return RepoRef.parse(project.project_key.id)
         return None
 
 
@@ -113,9 +113,9 @@ class DepsDevClient:
         """The resolved dependency graph of one version, resolved against today's registry."""
         return await self._get(DependencyGraph, f"{self._version_path(pkg, version)}:dependencies")
 
-    async def project(self, repository: str) -> Project:
-        """Present-day metadata for a GitHub repository, including its OpenSSF Scorecard."""
-        return await self._get(Project, f"/projects/{quote(f'github.com/{repository}', safe='')}")
+    async def project(self, repository: RepoRef) -> Project:
+        """Present-day metadata for a source repository, including its OpenSSF Scorecard."""
+        return await self._get(Project, f"/projects/{quote(str(repository), safe='')}")
 
     @staticmethod
     def _package_path(pkg: PackageRef) -> str:

@@ -227,7 +227,7 @@ async def _identifiers(pkg: PackageRef, as_of: date, evidence: Evidence) -> tupl
         repository = await evidence.source_repository(pkg, as_of)
     except SourceUnavailable:
         repository = None  # the name itself is still withheld
-    return identifiers(pkg, repository)
+    return identifiers(pkg, repository.path if repository else None)
 
 
 def _ignore(_event: CouncilEvent) -> None:
