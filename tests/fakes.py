@@ -13,12 +13,23 @@ REPO = "acme/widget"
 _PACKAGE_PATH = "/v3/systems/PYPI/packages/widget"
 
 
+@dataclass(frozen=True)
+class FakeIssue:
+    """An issue, or a pull request when ``pull_request`` is set; ``merged`` implies ``closed``."""
+
+    created: str
+    closed: str | None = None
+    merged: str | None = None
+    pull_request: bool = False
+
+
 @dataclass
 class FakeSources:
     """Canned responses for ``pypi:widget``.
 
-    The GitHub commits endpoint honours ``since``, ``until`` and paging the way the real one
-    does, so tests check the window the evidence layer asks for instead of trusting it.
+    The GitHub commits endpoint honours ``since``, ``until`` and paging, and the issue search
+    its ``is``, ``created``, ``closed`` and ``merged`` qualifiers, the way the real ones do, so
+    tests check the window the evidence layer asks for instead of trusting it.
     """
 
     versions: dict[str, str]
@@ -26,6 +37,7 @@ class FakeSources:
     commits: list[tuple[str, str]] = field(default_factory=list)  # (commit time, author login)
     licenses: list[str] = field(default_factory=lambda: ["MIT"])
     dependencies: list[tuple[str, str]] = field(default_factory=list)  # (name, DIRECT|INDIRECT)
+    issues: list[FakeIssue] = field(default_factory=list)
     repo: str | None = REPO
     requests: list[httpx.Request] = field(default_factory=list)
 
@@ -103,6 +115,8 @@ class FakeSources:
                     "open_issues_count": 14,
                 },
             )
+        if path == "/search/issues":
+            return self._search(request)
         if path != f"/repos/{self.repo}/commits":
             return httpx.Response(404)
         params = request.url.params
@@ -136,6 +150,26 @@ class FakeSources:
             headers["link"] = f'<{url}&page={last_page}>; rel="last"'
         return httpx.Response(200, json=body, headers=headers)
 
+    def _search(self, request: httpx.Request) -> httpx.Response:
+        repo, *terms = request.url.params["q"].split()
+        if repo != f"repo:{self.repo}":
+            return httpx.Response(422)
+        found = sorted(
+            (issue for issue in self.issues if all(_matches(issue, term) for term in terms)),
+            key=lambda issue: issue.created,
+            reverse=True,
+        )
+        items = [
+            {
+                "number": number,
+                "created_at": issue.created,
+                "closed_at": issue.closed,
+                **({"pull_request": {"merged_at": issue.merged}} if issue.pull_request else {}),
+            }
+            for number, issue in enumerate(found[: int(request.url.params["per_page"])], start=1)
+        ]
+        return httpx.Response(200, json={"total_count": len(found), "items": items})
+
 
 def widget() -> FakeSources:
     """A package whose history has something to hide from a review dated 2022-01-01.
@@ -143,6 +177,9 @@ def widget() -> FakeSources:
     Known by then: five releases (latest stable 2.1.0), a HIGH advisory published under two ids
     whose earliest record dates it 2021-05-01 (fixed in 2.1.0 after 123 days), and a MODERATE
     advisory with no fix yet. Only later: release 3.0.0, a CRITICAL advisory, and two commits.
+
+    Issues in 2021: one closed in 10 days, one closed only in 2022, one never closed. Pull
+    requests in 2021: one merged in 2 days, one closed unmerged, one merged only in 2022.
     """
     return FakeSources(
         versions={
@@ -194,6 +231,26 @@ def widget() -> FakeSources:
             ("2023-05-01T10:00:00Z", "alice"),
         ],
         dependencies=[("six", "DIRECT"), ("attrs", "DIRECT"), ("idna", "INDIRECT")],
+        issues=[
+            FakeIssue("2020-05-01T09:00:00Z", closed="2021-02-01T09:00:00Z"),
+            FakeIssue("2021-03-01T09:00:00Z", closed="2021-03-11T09:00:00Z"),
+            FakeIssue("2021-06-01T09:00:00Z", closed="2022-03-01T09:00:00Z"),
+            FakeIssue("2021-11-01T09:00:00Z"),
+            FakeIssue("2022-02-01T09:00:00Z"),
+            FakeIssue(
+                "2021-04-01T09:00:00Z",
+                closed="2021-04-03T09:00:00Z",
+                merged="2021-04-03T09:00:00Z",
+                pull_request=True,
+            ),
+            FakeIssue("2021-09-01T09:00:00Z", closed="2021-09-10T09:00:00Z", pull_request=True),
+            FakeIssue(
+                "2021-12-15T09:00:00Z",
+                closed="2022-01-10T09:00:00Z",
+                merged="2022-01-10T09:00:00Z",
+                pull_request=True,
+            ),
+        ],
     )
 
 
@@ -235,6 +292,22 @@ def vuln(
     if withdrawn:
         record["withdrawn"] = withdrawn
     return record
+
+
+def _matches(issue: FakeIssue, term: str) -> bool:
+    """Whether ``issue`` matches one search term, e.g. ``is:pr`` or ``-closed:*..<time>``."""
+    key, _, value = term.removeprefix("-").partition(":")
+    if key == "is":
+        matched = issue.pull_request == (value == "pr")
+    else:
+        stamp = {"created": issue.created, "closed": issue.closed, "merged": issue.merged}[key]
+        low, _, high = value.partition("..")
+        matched = (
+            stamp is not None
+            and (low == "*" or _time(stamp) >= _time(low))
+            and (high == "*" or _time(stamp) <= _time(high))
+        )
+    return matched != term.startswith("-")
 
 
 def _key(version: str) -> dict[str, str]:

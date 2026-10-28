@@ -23,7 +23,8 @@ _FOCUS = {
     Dimension.MAINTENANCE: """\
 Your dimension is maintenance: is the package actively and sustainably maintained? Weigh release \
 cadence and recency, commit volume and recency, how concentrated the work is among authors (a \
-bus-factor risk), and, when available, community size and any archive or deprecation status.""",
+bus-factor risk), how promptly issues and pull requests are resolved and how large the backlog \
+is, and, when available, community size and any archive or deprecation status.""",
     Dimension.SECURITY: """\
 Your dimension is security: what does the package's vulnerability record say about the risk of \
 adopting it? Weigh how many advisories there were and how severe, how quickly fixes shipped, \

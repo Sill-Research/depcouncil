@@ -1,14 +1,15 @@
 """Point-in-time evidence about a package, assembled from deps.dev, OSV and GitHub.
 
 Every query takes the date to answer as of and returns only what was knowable on it: releases
-published by then, advisories disclosed by then (with the fixes released by then), and commits
-made by then. Present-day snapshots, such as star counts, the OpenSSF Scorecard, and archive or
-deprecation flags, describe the package's future when seen from a past date, so a historical
-query gets a ``Withheld`` marker in their place.
+published by then, advisories disclosed by then (with the fixes released by then), commits made
+by then, and issues and pull requests as they stood then. Present-day snapshots, such as star
+counts, the OpenSSF Scorecard, and archive or deprecation flags, describe the package's future
+when seen from a past date, so a historical query gets a ``Withheld`` marker in their place.
 
-Two approximations remain, and each result that carries one says so in a ``note``: advisory
+Three approximations remain, and each result that carries one says so in a ``note``: advisory
 text and severity come from today's records of a vulnerability that was public by the date,
-and deps.dev resolves dependency graphs against today's registry.
+deps.dev resolves dependency graphs against today's registry, and GitHub keeps only an issue's
+latest closing.
 """
 
 from __future__ import annotations
@@ -22,14 +23,14 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from enum import StrEnum
 from importlib.metadata import version as installed_version
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import httpx
 from pydantic import BaseModel
 
 from depcouncil.data import DepsDevClient, GitHubClient, OsvClient, SourceUnavailable
 from depcouncil.data.depsdev import DependencyGraph, Package, VersionDetail
-from depcouncil.data.github import Repository
+from depcouncil.data.github import IssueItem, IssueSearch, Repository, search_range
 from depcouncil.data.osv import OsvAffected, OsvVulnerability
 from depcouncil.schemas import PackageRef, normalize_name
 from depcouncil.settings import Settings
@@ -43,6 +44,12 @@ RESOLVED_TODAY_NOTE = (
     "Dependencies are resolved against today's registry; an install on the analysis date "
     "may have resolved a different set."
 )
+ISSUES_NOTE = (
+    "Resolved means closed, for issues, and merged, for pull requests. Medians come from the "
+    "most recently opened ones in the window (`sampled`). GitHub keeps only an issue's latest "
+    "closing, so one closed by the analysis date but reopened later counts as open on it."
+)
+ISSUE_SAMPLE = 100
 _SNAPSHOT_WITHHELD = (
     "Present-day snapshot, not knowable on {as_of}; withheld from this historical review."
 )
@@ -142,6 +149,23 @@ class CommitActivity(BaseModel):
     top_author_share: float | None
     sampled_commits: int
     repository_created: date | None
+
+
+class IssueFlow(BaseModel):
+    opened_in_window: int
+    share_resolved_by_date: float | None
+    median_days_to_resolve: float | None
+    open_on_date: int
+    sampled: int
+
+
+class IssueActivity(BaseModel):
+    as_of: date
+    repository: str
+    window_days: int
+    issues: IssueFlow
+    pull_requests: IssueFlow
+    note: str = ISSUES_NOTE
 
 
 class VersionMetadata(BaseModel):
@@ -280,6 +304,25 @@ class Evidence:
             repository_created=meta.created_at.date() if meta.created_at else None,
         )
 
+    async def issue_activity(
+        self, pkg: PackageRef, as_of: date, *, window_days: int = 365
+    ) -> IssueActivity:
+        """Issues and pull requests opened in the window before the date, how many of them were
+        resolved by the date and how fast, and how many of all of them were open on it."""
+        repo = await self._require_repository(pkg, as_of)
+        start = cutoff(as_of) - timedelta(days=window_days)
+        issues, pulls = await asyncio.gather(
+            self._issue_flow(repo, "issue", as_of, start=start),
+            self._issue_flow(repo, "pr", as_of, start=start),
+        )
+        return IssueActivity(
+            as_of=as_of,
+            repository=repo,
+            window_days=window_days,
+            issues=issues,
+            pull_requests=pulls,
+        )
+
     async def version_metadata(self, pkg: PackageRef, as_of: date) -> VersionMetadata:
         """License and release integrity of the latest release by the date (fixed at publish)."""
         current = await self._current_release(pkg, as_of)
@@ -381,6 +424,37 @@ class Evidence:
             found.append((advisory, details))
         return sorted(found, key=lambda pair: pair[0].disclosed, reverse=True)
 
+    async def _issue_flow(
+        self, repo: str, kind: Literal["issue", "pr"], as_of: date, *, start: datetime
+    ) -> IssueFlow:
+        """Issues or pull requests created from ``start`` to the end of ``as_of``, and their fate
+        by then, asked of GitHub's search with every date bounded by the analysis date."""
+        end = cutoff(as_of)
+        window, by_date = search_range(start, end), search_range(None, end)
+        opened, still_open = await asyncio.gather(
+            self._search(repo, f"is:{kind} created:{window}", limit=ISSUE_SAMPLE),
+            self._search(repo, f"is:{kind} created:{by_date} -closed:{by_date}"),
+        )
+        days = [
+            (resolved - item.created_at).total_seconds() / 86400
+            for item in opened.items
+            if (resolved := _resolved_at(item)) is not None and known_by(resolved, as_of)
+        ]
+        if len(opened.items) >= opened.total_count:
+            resolved_count = len(days)
+        else:
+            resolution = "closed" if kind == "issue" else "merged"
+            query = f"is:{kind} created:{window} {resolution}:{by_date}"
+            resolved_count = (await self._search(repo, query)).total_count
+        total = opened.total_count
+        return IssueFlow(
+            opened_in_window=total,
+            share_resolved_by_date=round(resolved_count / total, 2) if total else None,
+            median_days_to_resolve=round(statistics.median(days), 1) if days else None,
+            open_on_date=still_open.total_count,
+            sampled=len(opened.items),
+        )
+
     async def _current_release(self, pkg: PackageRef, as_of: date) -> Release:
         """The latest stable release published by the date (else the latest prerelease)."""
         releases = await self.known_releases(pkg, as_of)
@@ -417,6 +491,12 @@ class Evidence:
 
     async def _repository(self, repo: str) -> Repository:
         return await self._once(("repository", repo), lambda: self._github.repository(repo))
+
+    async def _search(self, repo: str, query: str, *, limit: int = 1) -> IssueSearch:
+        return await self._once(
+            ("search", repo, query, str(limit)),
+            lambda: self._github.search_issues(repo, query, limit=limit),
+        )
 
     async def _once[T](self, key: tuple[str, ...], fetch: Callable[[], Awaitable[T]]) -> T:
         """Run ``fetch`` once per key; concurrent and later callers share its result or error."""
@@ -456,6 +536,11 @@ def _new_majors(releases: list[Release], as_of: date, *, within_days: int) -> li
             new.append(release.version)
         seen.add(major)
     return new
+
+
+def _resolved_at(item: IssueItem) -> datetime | None:
+    """When an issue was closed, or a pull request merged."""
+    return item.pull_request.merged_at if item.pull_request else item.closed_at
 
 
 def _alias_groups(records: list[OsvVulnerability]) -> list[list[OsvVulnerability]]:

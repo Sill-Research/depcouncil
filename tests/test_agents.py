@@ -49,7 +49,7 @@ async def test_no_tool_lets_the_model_choose_the_date_or_package(deps: CouncilDe
     for analyst in ANALYSTS.values():
         await analyst.run("Report.", deps=deps, model=FunctionModel(model))
 
-    assert len(schemas) == 8
+    assert len(schemas) == 9
     for name, schema in schemas.items():
         properties = schema.get("properties", {})
         assert isinstance(properties, dict)

@@ -13,7 +13,7 @@ Built on [Pydantic AI](https://ai.pydantic.dev).
 ## How it works
 
 ```
-                  ┌─ maintenance analyst ──  release_history, commit_activity, project_snapshot*
+                  ┌─ maintenance analyst ──  release_history, commit_activity, issue_activity, project_snapshot*
 pypi:requests ───►├─ security analyst ─────  vulnerability_record, advisory_details, security_practices*
  + analysis date  └─ supply-chain analyst ─  release_metadata, dependency_footprint
                           │  3 × AnalystReport, run concurrently (quick model)
@@ -28,7 +28,8 @@ pypi:requests ───►├─ security analyst ─────  vulnerability
 
 The data comes from three free sources: [deps.dev](https://deps.dev) (releases, licenses,
 dependency graphs, OpenSSF Scorecard), [OSV](https://osv.dev) (security advisories, rated by
-GHSA's severity or, failing that, their CVSS score) and the GitHub API (commit history).
+GHSA's severity or, failing that, their CVSS score) and the GitHub API (commit history, and
+issue and pull request search).
 
 ## Point-in-time discipline
 
@@ -37,8 +38,9 @@ data layer, not left to the prompt:
 
 - **Tools never take a date or package argument.** They read both from `RunContext.deps`
   (`agents/tools.py`), so the model can't ask for data past the analysis date.
-- **Releases, commits and advisories are filtered to the date** (`timeline.py`, `evidence.py`).
-  GitHub is queried with `until=<date>`, and a fix counts only if its release shipped by then.
+- **Releases, commits, issues and advisories are filtered to the date** (`timeline.py`,
+  `evidence.py`). GitHub is queried with `until=<date>`, every date in an issue search is bounded
+  by it, and a fix counts only if its release shipped by then.
 - **One vulnerability, one record, dated by its earliest disclosure.** OSV lists the same CVE
   under several ids (GHSA, PYSEC, …) with different publish dates. The records are merged
   through their aliases, and the merged advisory is dated by its earliest record.
@@ -50,7 +52,8 @@ data layer, not left to the prompt:
   outcome was known by the analysis date (`memory.py`).
 
 Known gaps, which the tool results also state in a `note`: advisory text and severity come from
-today's records, and deps.dev resolves dependency graphs against today's registry.
+today's records, deps.dev resolves dependency graphs against today's registry, and GitHub keeps
+only an issue's latest closing, so an issue closed by the date but reopened later counts as open.
 
 ## Anonymized reviews
 
@@ -110,7 +113,7 @@ Set these in the environment or in `.env`:
 | `DEPCOUNCIL_DEBATE_ROUNDS` | `1` | Advocate/skeptic exchanges |
 | `DEPCOUNCIL_MAX_TOOL_ROUNDS` | `4` | Turns an analyst may spend on tools before it must report |
 | `DEPCOUNCIL_MEMORY_PATH` | – | JSON Lines file for the council's [memory](#memory); off when unset |
-| `GITHUB_TOKEN` | – | Raises GitHub's limit from 60 to 5,000 requests an hour |
+| `GITHUB_TOKEN` | – | Raises GitHub's limits from 60 to 5,000 requests an hour, and from 10 to 30 searches a minute |
 
 Models are any Pydantic AI `provider:model` string (`openai:gpt-5`, `google-gla:...` with the
 `google` extra, `ollama:...`), and the provider's usual API-key variable applies.
@@ -213,5 +216,4 @@ uv run pyright          # strict on src/
 
 ## Next steps
 
-- **More signal.** Issue and PR responsiveness (needs point-in-time issue queries), and
-  repositories hosted outside GitHub.
+- **More signal.** Repositories hosted outside GitHub.

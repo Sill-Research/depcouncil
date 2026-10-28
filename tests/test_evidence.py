@@ -1,11 +1,13 @@
 """The evidence layer answers as of a date and hides everything after it."""
 
+import re
 from datetime import date
 
 import pytest
 
 from depcouncil import Evidence, PackageRef
-from depcouncil.evidence import ProjectSnapshot, ScorecardReport, Severity, Withheld
+from depcouncil import evidence as evidence_module
+from depcouncil.evidence import IssueFlow, ProjectSnapshot, ScorecardReport, Severity, Withheld
 from depcouncil.timeline import today
 from tests.fakes import FakeSources, vuln
 
@@ -117,6 +119,44 @@ async def test_commit_activity_asks_github_for_the_window_before_the_date(
     assert activity.top_author_share == 0.67
     commit_queries = [r for r in sources.requests if r.url.path.endswith("/commits")]
     assert {r.url.params["until"] for r in commit_queries} == {"2022-01-02T00:00:00Z"}
+
+
+async def test_issue_activity_counts_only_what_had_happened_by_the_date(
+    evidence: Evidence, sources: FakeSources
+) -> None:
+    activity = await evidence.issue_activity(WIDGET, AS_OF)
+
+    # Opened in 2021: three of each. By the date, one issue closed (after 10 days) and one pull
+    # request merged (after 2); the two resolved in 2022 count as open on the date.
+    assert activity.issues == IssueFlow(
+        opened_in_window=3,
+        share_resolved_by_date=0.33,
+        median_days_to_resolve=10.0,
+        open_on_date=2,
+        sampled=3,
+    )
+    assert activity.pull_requests == IssueFlow(
+        opened_in_window=3,
+        share_resolved_by_date=0.33,
+        median_days_to_resolve=2.0,
+        open_on_date=1,
+        sampled=3,
+    )
+    searches = [r.url.params["q"] for r in sources.requests if r.url.path == "/search/issues"]
+    stamps = {stamp for q in searches for stamp in re.findall(r"\d{4}-\d\d-\d\dT[\d:]+Z", q)}
+    assert max(stamps) == "2022-01-01T23:59:59Z"
+
+
+async def test_issue_activity_counts_past_its_sample(
+    evidence: Evidence, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(evidence_module, "ISSUE_SAMPLE", 1)
+
+    activity = await evidence.issue_activity(WIDGET, AS_OF)
+
+    # The one sampled issue is still open, so the share comes from a separate count.
+    assert (activity.issues.sampled, activity.issues.share_resolved_by_date) == (1, 0.33)
+    assert activity.issues.median_days_to_resolve is None
 
 
 async def test_present_day_snapshots_are_withheld_from_historical_runs(evidence: Evidence) -> None:

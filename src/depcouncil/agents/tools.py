@@ -18,6 +18,7 @@ from depcouncil.evidence import (
     AdvisoryDetail,
     CommitActivity,
     DependencyFootprint,
+    IssueActivity,
     ProjectSnapshot,
     ReleaseHistory,
     ScorecardReport,
@@ -58,6 +59,23 @@ async def commit_activity(
     deps = ctx.deps
     return await _answer(
         deps.evidence.commit_activity(deps.package, deps.as_of, window_days=window_days)
+    )
+
+
+@_maintenance.tool
+async def issue_activity(
+    ctx: RunContext[CouncilDeps], window_days: Annotated[int, Field(ge=30, le=1095)] = 365
+) -> IssueActivity | Unavailable:
+    """Issues and pull requests in the source repository: how many were opened in the window
+    before the analysis date, the share closed or merged by the date and how fast, and how many
+    were still open on it.
+
+    Args:
+        window_days: How many days before the analysis date to look back, from 30 to 1095.
+    """
+    deps = ctx.deps
+    return await _answer(
+        deps.evidence.issue_activity(deps.package, deps.as_of, window_days=window_days)
     )
 
 
