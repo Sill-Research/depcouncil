@@ -50,6 +50,7 @@ class MemoryEntry(BaseModel):
     horizon_days: int
     decision: Decision
     models: dict[str, str]
+    anonymized: bool = False
     settlement: Settlement | None = None
 
     @classmethod
@@ -62,6 +63,7 @@ class MemoryEntry(BaseModel):
             horizon_days=horizon_days,
             decision=result.decision,
             models=result.models,
+            anonymized=result.anonymized,
         )
 
     @property

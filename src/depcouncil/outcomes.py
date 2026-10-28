@@ -106,12 +106,14 @@ async def backtest(
     settings: Settings | None = None,
     evidence: Evidence | None = None,
     past_decisions: Sequence[PastDecision] = (),
+    anonymize: bool = True,
     on_event: Callable[[CouncilEvent], None] | None = None,
 ) -> BacktestResult:
     """Convene the council as of a past date, then grade its call against what happened next.
 
-    ``past_decisions`` are passed to ``run_council``; recall them for ``as_of`` so that none of
-    their outcomes postdates it.
+    ``past_decisions`` and ``anonymize`` are passed to ``run_council``. Recall the past decisions
+    for ``as_of``, so that none of their outcomes postdates it. The review is anonymized unless
+    asked otherwise, so the models judge the evidence rather than what they remember.
     """
     settings = settings or Settings()
     pkg = PackageRef.parse(package) if isinstance(package, str) else package
@@ -129,6 +131,7 @@ async def backtest(
             settings=settings,
             evidence=evidence,
             past_decisions=past_decisions,
+            anonymize=anonymize,
             on_event=on_event,
         )
     return BacktestResult(

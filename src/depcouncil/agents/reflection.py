@@ -1,7 +1,9 @@
 """The reflector, who looks back on a decision once its outcome is known and draws a lesson.
 
 It is not on the council: it runs after the fact, and its lessons reach the chairs of later
-reviews through the council's memory (``depcouncil.memory``).
+reviews through the council's memory (``depcouncil.memory``). It is never told the package's
+name, so that its lessons rest on the decision and the outcome rather than on what the model
+remembers of the package after the outcome's horizon.
 """
 
 from pydantic_ai import Agent, format_as_xml
@@ -33,7 +35,7 @@ def reflection_prompt(
     decision: Decision, outcome: Outcome, *, intended_use: str, score: Score
 ) -> str:
     review = {
-        "package": str(outcome.package),
+        "package": f"a {outcome.package.ecosystem.osv_ecosystem} package, name withheld",
         "analysis_date": outcome.start,
         "intended_use": intended_use or "not stated",
         "outcome_known_on": outcome.end,

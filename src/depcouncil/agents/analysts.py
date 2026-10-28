@@ -1,11 +1,12 @@
 """The three analysts. Each investigates one dimension of the package with its own data tools
 and files a structured ``AnalystReport``; the council runs them concurrently."""
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.toolsets import AbstractToolset
 
-from depcouncil.agents.deps import CouncilDeps, describe_review
+from depcouncil.agents.deps import CouncilDeps, describe_analyst_review
 from depcouncil.agents.tools import MAINTENANCE_TOOLS, SECURITY_TOOLS, SUPPLY_CHAIN_TOOLS
+from depcouncil.anonymity import ALIAS, named_in, redact
 from depcouncil.schemas import AnalystReport, Dimension
 
 _BRIEF = """\
@@ -41,15 +42,41 @@ _TOOLSETS: dict[Dimension, AbstractToolset[CouncilDeps]] = {
 }
 
 
+def _keep_the_name_out(ctx: RunContext[CouncilDeps], report: AnalystReport) -> AnalystReport:
+    """In an anonymized review, send back a report that names the package. On the last attempt,
+    redact the name instead, rather than fail the council over it."""
+    names = ctx.deps.identifiers
+    text = [report.summary, *report.strengths, *report.concerns, *report.data_gaps]
+    found = named_in("\n".join(text), names)
+    if not found:
+        return report
+    if not ctx.last_attempt:
+        raise ModelRetry(
+            f"This review is anonymized, but your report names the package: {', '.join(found)}. "
+            f'Rewrite it, referring to the package only as "{ALIAS}", and rephrase any sentence '
+            "where one of those words has another meaning."
+        )
+    return report.model_copy(
+        update={
+            "summary": redact(report.summary, names),
+            "strengths": [redact(item, names) for item in report.strengths],
+            "concerns": [redact(item, names) for item in report.concerns],
+            "data_gaps": [redact(item, names) for item in report.data_gaps],
+        }
+    )
+
+
 def _analyst(dimension: Dimension) -> Agent[CouncilDeps, AnalystReport]:
-    return Agent(
+    analyst = Agent(
         name=f"{dimension}_analyst",
         deps_type=CouncilDeps,
         output_type=AnalystReport,
-        instructions=[_BRIEF, _FOCUS[dimension], describe_review],
+        instructions=[_BRIEF, _FOCUS[dimension], describe_analyst_review],
         toolsets=[_TOOLSETS[dimension]],
         retries=2,
     )
+    analyst.output_validator(_keep_the_name_out)
+    return analyst
 
 
 ANALYSTS: dict[Dimension, Agent[CouncilDeps, AnalystReport]] = {

@@ -50,9 +50,24 @@ data layer, not left to the prompt:
   outcome was known by the analysis date (`memory.py`).
 
 Known gaps, which the tool results also state in a `note`: advisory text and severity come from
-today's records, and deps.dev resolves dependency graphs against today's registry. The model's
-own training data is the remaining leak: it may simply *know* how a famous package turned out.
-The lessons in memory are written by a model after the fact, so they share that leak.
+today's records, and deps.dev resolves dependency graphs against today's registry.
+
+## Anonymized reviews
+
+The model's own training data is the remaining leak: it may simply *know* how a famous package
+turned out. Anonymized reviews narrow it, and backtests use them by default (`--named` opts
+out; `analyze --anonymize` opts in):
+
+- The debaters and the chair are told only the package's ecosystem ("an anonymized PyPI
+  package").
+- The analysts see the name in their tool results, so they are told to write their reports
+  without it. A report that still names the package or its source repository is sent back for
+  a rewrite and, on the last attempt, redacted (`anonymity.py`).
+- Past decisions about the package itself reach the chair redacted, and the reflector that
+  writes memory's lessons is never told the name.
+
+Advisory ids, dependency names and version numbers stay in the reports as evidence the debate
+can check, so a well-known package can still be recognized from them.
 
 ## Quickstart
 
@@ -63,7 +78,7 @@ cp .env.example .env            # add ANTHROPIC_API_KEY (and optionally GITHUB_T
 uv run depcouncil analyze pypi:requests --use "HTTP client in a long-lived backend service"
 uv run depcouncil analyze npm:request --as-of 2020-01-15        # as it stood on that date
 uv run depcouncil outcome npm:request --as-of 2020-06-01        # what happened next (no LLM)
-uv run depcouncil backtest npm:request pypi:requests --as-of 2022-01-01
+uv run depcouncil backtest npm:request pypi:requests --as-of 2022-01-01   # anonymized
 
 # Dry-run the whole pipeline against live data with Pydantic AI's TestModel: no key, no cost.
 DEPCOUNCIL_QUICK_MODEL=test DEPCOUNCIL_DEEP_MODEL=test uv run depcouncil analyze pypi:requests
@@ -177,6 +192,7 @@ src/depcouncil/
   schemas.py      PackageRef, every agent's output model, outcomes and past decisions
   settings.py     DEPCOUNCIL_* configuration (pydantic-settings)
   timeline.py     what was knowable on a date
+  anonymity.py    what names a package, and how the name is kept from the debaters and chair
   data/           raw clients: deps.dev, OSV, GitHub (responses parsed into Pydantic models)
   evidence.py     point-in-time facts built from the raw data; the only place dates are applied
   agents/         deps, data tools, analysts, advocate/skeptic/chair, reflector
@@ -197,7 +213,5 @@ uv run pyright          # strict on src/
 
 ## Next steps
 
-- **Anonymized reviews.** Hide the package name from the debaters and the chair, to cut the
-  model's own hindsight out of backtests.
 - **More signal.** Issue and PR responsiveness (needs point-in-time issue queries), CVSS
   scoring for advisories that lack a GHSA severity, and repositories hosted outside GitHub.

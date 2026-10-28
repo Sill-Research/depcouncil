@@ -26,6 +26,8 @@ from depcouncil.agents import (
     debate_prompt,
     skeptic,
 )
+from depcouncil.anonymity import identifiers, redact_past_decision
+from depcouncil.data import SourceUnavailable
 from depcouncil.evidence import Evidence, open_evidence
 from depcouncil.schemas import (
     AnalystReport,
@@ -66,6 +68,7 @@ class CouncilResult(BaseModel):
     package: PackageRef
     as_of: date
     intended_use: str
+    anonymized: bool
     reports: dict[Dimension, AnalystReport]
     debate: list[DebateTurn]
     past_decisions: list[PastDecision]
@@ -107,6 +110,7 @@ async def run_council(
     settings: Settings | None = None,
     evidence: Evidence | None = None,
     past_decisions: Sequence[PastDecision] = (),
+    anonymize: bool = False,
     on_event: Callable[[CouncilEvent], None] | None = None,
 ) -> CouncilResult:
     """Convene the council on a package and return its decision.
@@ -119,6 +123,8 @@ async def run_council(
         evidence: A data source to reuse, as a backtest does; a fresh one is opened when omitted.
         past_decisions: Earlier decisions and their lessons, shown to the chair. Recall them
             with ``Memory.recall`` for the same date, so that none of their outcomes postdates it.
+        anonymize: Keep the package's name and repository from the debaters and the chair, so
+            they judge the evidence rather than what they remember of the package.
         on_event: Called as each report, debate turn and the decision arrive.
     """
     settings = settings or Settings()
@@ -134,11 +140,13 @@ async def run_council(
     async with AsyncExitStack() as stack:
         if evidence is None:
             evidence = await stack.enter_async_context(open_evidence(settings))
-        deps = CouncilDeps(pkg, as_of, intended_use, evidence, settings.max_tool_rounds)
+        names = await _identifiers(pkg, as_of, evidence) if anonymize else ()
+        deps = CouncilDeps(pkg, as_of, intended_use, evidence, settings.max_tool_rounds, names)
+        past = [redact_past_decision(p, names) for p in past_decisions]
         reports = await _brief(deps, quick, usage, emit)
         transcript = await _debate(deps, reports, quick, settings.debate_rounds, usage, emit)
         ruling = await chair.run(
-            chair_prompt(reports, transcript, past_decisions),
+            chair_prompt(reports, transcript, past),
             deps=deps,
             model=deep.model,
             model_settings=deep.settings,
@@ -150,9 +158,10 @@ async def run_council(
         package=pkg,
         as_of=as_of,
         intended_use=intended_use,
+        anonymized=anonymize,
         reports=reports,
         debate=transcript,
-        past_decisions=list(past_decisions),
+        past_decisions=past,
         decision=ruling.output,
         models={"quick": quick.model, "deep": deep.model},
         usage=Usage.of(usage),
@@ -210,6 +219,15 @@ async def _debate(
             transcript.append(turn)
             emit(TurnTaken(turn))
     return transcript
+
+
+async def _identifiers(pkg: PackageRef, as_of: date, evidence: Evidence) -> tuple[str, ...]:
+    """The spellings an anonymized review withholds, including the source repository if known."""
+    try:
+        repository = await evidence.source_repository(pkg, as_of)
+    except SourceUnavailable:
+        repository = None  # the name itself is still withheld
+    return identifiers(pkg, repository)
 
 
 def _ignore(_event: CouncilEvent) -> None:

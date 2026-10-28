@@ -385,9 +385,13 @@ class Evidence:
             raise SourceUnavailable("deps.dev", f"no release of {pkg} was published by {as_of}")
         return next((r for r in reversed(releases) if not r.prerelease), releases[-1])
 
-    async def _require_repository(self, pkg: PackageRef, as_of: date) -> str:
+    async def source_repository(self, pkg: PackageRef, as_of: date) -> str | None:
+        """The GitHub ``owner/name`` that the latest release by the date names as its source."""
         current = await self._current_release(pkg, as_of)
-        repo = (await self._version_detail(pkg, current.version)).source_repository()
+        return (await self._version_detail(pkg, current.version)).source_repository()
+
+    async def _require_repository(self, pkg: PackageRef, as_of: date) -> str:
+        repo = await self.source_repository(pkg, as_of)
         if repo is None:
             raise SourceUnavailable("GitHub", f"no GitHub source repository is linked to {pkg}")
         return repo

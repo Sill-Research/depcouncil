@@ -61,3 +61,4 @@ async def test_backtest_grades_the_council(sources: FakeSources) -> None:
 
     assert result.outcome.adverse
     assert result.score is score(result.council.decision.rating, adverse=True)
+    assert result.council.anonymized  # backtests are anonymized unless asked otherwise

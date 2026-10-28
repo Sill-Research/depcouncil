@@ -17,9 +17,11 @@ _RATINGS = {
 def council_markdown(result: CouncilResult) -> str:
     decision = result.decision
     use = f" · intended use: {result.intended_use}" if result.intended_use else ""
+    anonymized = " · anonymized" if result.anonymized else ""
     lines = [
         f"# {result.package}: {_RATINGS[decision.rating]}",
-        f"*{decision.confidence.capitalize()} confidence · reviewed as of {result.as_of}{use}*",
+        f"*{decision.confidence.capitalize()} confidence · reviewed as of {result.as_of}"
+        f"{anonymized}{use}*",
         "",
         decision.rationale,
         *_bullets("Deciding factors", decision.deciding_factors),

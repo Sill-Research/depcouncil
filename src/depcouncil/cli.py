@@ -82,6 +82,14 @@ Rounds = Annotated[
     ),
 ]
 Json = Annotated[bool, typer.Option("--json", help="Print the full result as JSON.")]
+Anonymize = Annotated[
+    bool,
+    typer.Option(
+        "--anonymize/--named",
+        help="Keep the package's name and repository from the debaters and the chair, so they "
+        "judge the evidence rather than what they remember of the package.",
+    ),
+]
 
 
 @app.callback()
@@ -96,6 +104,7 @@ def analyze(
     as_of: AsOf = None,
     use: Use = "",
     rounds: Rounds = None,
+    anonymize: Anonymize = False,
     json: Json = False,
 ) -> None:
     """Convene the council on a package and print its decision."""
@@ -109,6 +118,7 @@ def analyze(
             intended_use=use,
             settings=settings,
             past_decisions=_recall(memory, pkg, day),
+            anonymize=anonymize,
             on_event=_report_progress,
         )
         if memory:
@@ -155,6 +165,7 @@ def backtest_command(
     horizon_days: Horizon = DEFAULT_HORIZON_DAYS,
     use: Use = "",
     rounds: Rounds = None,
+    anonymize: Anonymize = True,
     json: Json = False,
 ) -> None:
     """Review packages as of a past date, then score each call against what happened next."""
@@ -169,6 +180,7 @@ def backtest_command(
             intended_use=use,
             settings=settings,
             past_decisions=_recall(memory, ref, day),
+            anonymize=anonymize,
             on_event=_report_progress,
         )
         if memory:
