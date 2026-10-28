@@ -1,4 +1,5 @@
-"""Typed values shared across the council: the package under review and every agent's output.
+"""Typed values shared across the council: the package under review, every agent's output, and
+what happened after a decision.
 
 The agent output models double as the schemas the models are asked to fill, so their field
 descriptions are written for the model as much as for the reader.
@@ -7,6 +8,7 @@ descriptions are written for the model as much as for the reader.
 from __future__ import annotations
 
 import re
+from datetime import date
 from enum import StrEnum
 from typing import Literal, Self
 
@@ -155,3 +157,44 @@ class Decision(BaseModel):
     revisit_if: list[str] = Field(
         default_factory=list, description="Future signals that should trigger a fresh review."
     )
+
+
+class Outcome(BaseModel):
+    """What happened to a package over the horizon after an analysis date."""
+
+    package: PackageRef
+    start: date
+    end: date
+    releases: int
+    commits_last_180_days: int | None
+    dormant: bool
+    advisories: int
+    severe_advisories: int
+    slow_or_unfixed_severe: list[str]
+    adverse: bool
+    findings: list[str]
+
+
+class Score(StrEnum):
+    HIT = "hit"
+    PARTIAL = "partial"
+    MISS = "miss"
+
+
+class PastDecision(BaseModel):
+    """A decision the council made earlier, what happened after it, and the lesson drawn from it.
+
+    The chair of a later review sees only those whose outcome was known by its analysis date.
+    """
+
+    package: str
+    analysis_date: date
+    intended_use: str
+    rating: Rating
+    confidence: Literal["low", "medium", "high"]
+    deciding_factors: list[str]
+    outcome_known_on: date
+    adverse_outcome: bool
+    what_happened: list[str]
+    score: Score
+    lesson: str

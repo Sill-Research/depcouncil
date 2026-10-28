@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from pydantic_ai import Agent, format_as_xml
 
 from depcouncil.agents.deps import CouncilDeps, describe_review
-from depcouncil.schemas import AnalystReport, DebateTurn, Decision, Dimension
+from depcouncil.schemas import AnalystReport, DebateTurn, Decision, Dimension, PastDecision
 
 _GROUND_RULES = """\
 Use only facts from the analyst reports and the debate so far; do not add what you know about \
@@ -55,6 +55,9 @@ You chair a council deciding whether a team should adopt an open-source package.
 analyst reports and the debate, then make the call. Judge the arguments on the evidence behind \
 them, not on how forcefully they were made, and let data gaps lower your confidence rather \
 than your rating.""",
+        """\
+Past decisions, when listed, are the council's earlier calls and what happened after them. Let \
+their lessons shape how you weigh similar evidence, but rule on this package's own record.""",
         describe_review,
     ],
     retries=2,
@@ -74,9 +77,14 @@ def debate_prompt(
 
 
 def chair_prompt(
-    reports: Mapping[Dimension, AnalystReport], transcript: Sequence[DebateTurn]
+    reports: Mapping[Dimension, AnalystReport],
+    transcript: Sequence[DebateTurn],
+    past_decisions: Sequence[PastDecision] = (),
 ) -> str:
-    return _briefing(reports, transcript) + "\n\nMake the council's decision."
+    sections = [_briefing(reports, transcript)]
+    if past_decisions:
+        sections.append(format_as_xml(list(past_decisions), root_tag="past_decisions"))
+    return "\n\n".join(sections) + "\n\nMake the council's decision."
 
 
 def _briefing(reports: Mapping[Dimension, AnalystReport], transcript: Sequence[DebateTurn]) -> str:

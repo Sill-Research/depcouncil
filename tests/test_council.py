@@ -64,6 +64,7 @@ async def test_chair_rules_on_the_reports_and_the_debate(evidence: Evidence) -> 
     (prompt,) = prompts
     assert "<analyst_reports>" in prompt and "<supply_chain>" in prompt
     assert "<debate>" in prompt and "<speaker>skeptic</speaker>" in prompt
+    assert "<past_decisions>" not in prompt
 
 
 async def test_council_refuses_a_future_date(evidence: Evidence) -> None:

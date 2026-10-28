@@ -1,5 +1,6 @@
 """Run configuration, read from ``DEPCOUNCIL_*`` environment variables or a ``.env`` file."""
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AliasChoices, Field, SecretStr
@@ -16,7 +17,10 @@ class Settings(BaseSettings):
     pipeline against live data with Pydantic AI's offline ``TestModel`` and no API key.
     """
 
-    model_config = SettingsConfigDict(env_prefix="DEPCOUNCIL_", env_file=".env", extra="ignore")
+    # An empty value (`GITHUB_TOKEN=` in .env) means unset rather than an empty string or path.
+    model_config = SettingsConfigDict(
+        env_prefix="DEPCOUNCIL_", env_file=".env", extra="ignore", env_ignore_empty=True
+    )
 
     quick_model: str = Field(
         default="anthropic:claude-sonnet-5-5",
@@ -46,4 +50,9 @@ class Settings(BaseSettings):
     )
     http_timeout: float = Field(
         default=30.0, gt=0, description="Seconds before a data request fails."
+    )
+    memory_path: Path | None = Field(
+        default=None,
+        description="JSON Lines file where the CLI remembers each decision and recalls past "
+        "lessons for the chair. Memory is off when unset.",
     )

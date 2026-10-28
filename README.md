@@ -21,8 +21,8 @@ pypi:requests ───►├─ security analyst ─────  vulnerability
                  advocate ⇄ skeptic          N rounds, no tools (quick model)
                           │
                           ▼
-                        chair  ───────────►  Decision: adopt | adopt_with_conditions | avoid
-                                             (deep model)
+   past decisions ───►  chair  ───────────►  Decision: adopt | adopt_with_conditions | avoid
+   (memory, optional)                        (deep model)
         * present-day data: available to live runs, withheld from historical ones
 ```
 
@@ -46,10 +46,13 @@ data layer, not left to the prompt:
   archive and deprecation flags describe the package's future when seen from a past date.
 - **A guessed future advisory id learns nothing.** It gets the same answer as an id that
   doesn't exist.
+- **Memory recalls only what had played out.** The chair sees a past decision only if its
+  outcome was known by the analysis date (`memory.py`).
 
 Known gaps, which the tool results also state in a `note`: advisory text and severity come from
 today's records, and deps.dev resolves dependency graphs against today's registry. The model's
 own training data is the remaining leak: it may simply *know* how a famous package turned out.
+The lessons in memory are written by a model after the fact, so they share that leak.
 
 ## Quickstart
 
@@ -91,6 +94,7 @@ Set these in the environment or in `.env`:
 | `DEPCOUNCIL_QUICK_EFFORT` / `_DEEP_EFFORT` | `medium` / `high` | Thinking effort per tier |
 | `DEPCOUNCIL_DEBATE_ROUNDS` | `1` | Advocate/skeptic exchanges |
 | `DEPCOUNCIL_MAX_TOOL_ROUNDS` | `4` | Turns an analyst may spend on tools before it must report |
+| `DEPCOUNCIL_MEMORY_PATH` | – | JSON Lines file for the council's [memory](#memory); off when unset |
 | `GITHUB_TOKEN` | – | Raises GitHub's limit from 60 to 5,000 requests an hour |
 
 Models are any Pydantic AI `provider:model` string (`openai:gpt-5`, `google-gla:...` with the
@@ -117,6 +121,40 @@ ended yet), then convenes the council as of the start date and scores its call:
 These definitions are deliberately simple and live in `outcomes.py`; tune them to the risks you
 care about.
 
+## Memory
+
+With `DEPCOUNCIL_MEMORY_PATH` set, the council remembers its decisions and learns from how they
+turned out:
+
+- `backtest` stores each decision already settled: its outcome, its score, and a lesson of two
+  to four sentences that a reflector agent draws from them (one extra quick-model call).
+- `analyze` stores each decision pending. Once its horizon has ended, `depcouncil settle`
+  measures the outcome and draws the lesson.
+- Before it rules, the chair is shown up to five settled decisions on the same package and
+  three on others, most recent first, each with its lesson.
+
+Recall is point-in-time too: a review dated *D* sees only the decisions whose outcome was known
+by *D*. Backtests over successive dates learn from earlier ones and never from later ones:
+
+```bash
+uv run depcouncil backtest npm:request pypi:requests --as-of 2019-01-01   # known by 2020-06-24
+uv run depcouncil backtest npm:left-pad --as-of 2021-01-01                # recalls both
+uv run depcouncil settle                         # grade live decisions whose horizon has ended
+```
+
+The memory is a plain JSON Lines file. A later line about the same review (package, date and
+intended use) replaces an earlier one, so reruns and settlements never count twice. Memory is
+off by default so that backtests stay reproducible; from Python, recall and record explicitly:
+
+```python
+from depcouncil import Memory, MemoryEntry, PackageRef, run_council
+
+memory = Memory(Path("memory.jsonl"))
+past = memory.recall(PackageRef.parse("npm:left-pad"), date(2021, 1, 1))
+result = asyncio.run(run_council("npm:left-pad", as_of=date(2021, 1, 1), past_decisions=past))
+memory.add(MemoryEntry.of(result))
+```
+
 ## Design
 
 - **The workflow is plain async code** (`council.py`). `asyncio.TaskGroup` runs the analysts
@@ -128,20 +166,23 @@ care about.
   `UsageLimits` as a backstop.
 - **Outputs are Pydantic models** (`AnalystReport`, `Decision`), validated and retried.
 - **Models are `provider:model` strings**, with `ModelSettings(thinking=...)` set per tier.
+- **Memory is passed in, not built in.** `run_council` takes the recalled `PastDecision`s as
+  data; the store and the reflector sit outside the council.
 - **No checkpointing.** A run is roughly 10–20 model calls, cheap enough to rerun.
 
 ## Layout
 
 ```
 src/depcouncil/
-  schemas.py      PackageRef and every agent's output model
+  schemas.py      PackageRef, every agent's output model, outcomes and past decisions
   settings.py     DEPCOUNCIL_* configuration (pydantic-settings)
   timeline.py     what was knowable on a date
   data/           raw clients: deps.dev, OSV, GitHub (responses parsed into Pydantic models)
   evidence.py     point-in-time facts built from the raw data; the only place dates are applied
-  agents/         deps, data tools, analysts, advocate/skeptic/chair
+  agents/         deps, data tools, analysts, advocate/skeptic/chair, reflector
   council.py      the workflow
   outcomes.py     outcome measurement, scoring, backtest
+  memory.py       remembered decisions: storage, point-in-time recall, reflection, settlement
   render.py, cli.py
 tests/            fake data sources + TestModel/FunctionModel tests (no network, no API key)
 ```
@@ -156,8 +197,6 @@ uv run pyright          # strict on src/
 
 ## Next steps
 
-- **Memory and reflection.** Store each decision with its later outcome, and feed the lessons
-  to the chair.
 - **Anonymized reviews.** Hide the package name from the debaters and the chair, to cut the
   model's own hindsight out of backtests.
 - **More signal.** Issue and PR responsiveness (needs point-in-time issue queries), CVSS

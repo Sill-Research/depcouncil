@@ -8,7 +8,7 @@ the next one only typed outputs, never a shared mutable state.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import date
@@ -27,7 +27,14 @@ from depcouncil.agents import (
     skeptic,
 )
 from depcouncil.evidence import Evidence, open_evidence
-from depcouncil.schemas import AnalystReport, DebateTurn, Decision, Dimension, PackageRef
+from depcouncil.schemas import (
+    AnalystReport,
+    DebateTurn,
+    Decision,
+    Dimension,
+    PackageRef,
+    PastDecision,
+)
 from depcouncil.settings import Settings
 from depcouncil.timeline import today
 
@@ -61,6 +68,7 @@ class CouncilResult(BaseModel):
     intended_use: str
     reports: dict[Dimension, AnalystReport]
     debate: list[DebateTurn]
+    past_decisions: list[PastDecision]
     decision: Decision
     models: dict[str, str]
     usage: Usage
@@ -98,6 +106,7 @@ async def run_council(
     intended_use: str = "",
     settings: Settings | None = None,
     evidence: Evidence | None = None,
+    past_decisions: Sequence[PastDecision] = (),
     on_event: Callable[[CouncilEvent], None] | None = None,
 ) -> CouncilResult:
     """Convene the council on a package and return its decision.
@@ -108,6 +117,8 @@ async def run_council(
         intended_use: How the team plans to use the package; risks are weighed against it.
         settings: Models and limits; read from the environment when omitted.
         evidence: A data source to reuse, as a backtest does; a fresh one is opened when omitted.
+        past_decisions: Earlier decisions and their lessons, shown to the chair. Recall them
+            with ``Memory.recall`` for the same date, so that none of their outcomes postdates it.
         on_event: Called as each report, debate turn and the decision arrive.
     """
     settings = settings or Settings()
@@ -127,7 +138,7 @@ async def run_council(
         reports = await _brief(deps, quick, usage, emit)
         transcript = await _debate(deps, reports, quick, settings.debate_rounds, usage, emit)
         ruling = await chair.run(
-            chair_prompt(reports, transcript),
+            chair_prompt(reports, transcript, past_decisions),
             deps=deps,
             model=deep.model,
             model_settings=deep.settings,
@@ -141,6 +152,7 @@ async def run_council(
         intended_use=intended_use,
         reports=reports,
         debate=transcript,
+        past_decisions=list(past_decisions),
         decision=ruling.output,
         models={"quick": quick.model, "deep": deep.model},
         usage=Usage.of(usage),

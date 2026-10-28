@@ -10,43 +10,22 @@ advisory disclosed in the horizon went more than 90 days without a fix.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import AsyncExitStack
 from datetime import date, timedelta
-from enum import StrEnum
 
 from pydantic import BaseModel
 
 from depcouncil.council import CouncilEvent, CouncilResult, run_council
 from depcouncil.data import SourceUnavailable
 from depcouncil.evidence import Advisory, Evidence, Severity, open_evidence
-from depcouncil.schemas import PackageRef, Rating
+from depcouncil.schemas import Outcome, PackageRef, PastDecision, Rating, Score
 from depcouncil.settings import Settings
 from depcouncil.timeline import today
 
 DEFAULT_HORIZON_DAYS = 540
 SLOW_FIX_DAYS = 90
 DORMANT_DAYS = 180
-
-
-class Outcome(BaseModel):
-    package: PackageRef
-    start: date
-    end: date
-    releases: int
-    commits_last_180_days: int | None
-    dormant: bool
-    advisories: int
-    severe_advisories: int
-    slow_or_unfixed_severe: list[str]
-    adverse: bool
-    findings: list[str]
-
-
-class Score(StrEnum):
-    HIT = "hit"
-    PARTIAL = "partial"
-    MISS = "miss"
 
 
 class BacktestResult(BaseModel):
@@ -126,9 +105,14 @@ async def backtest(
     intended_use: str = "",
     settings: Settings | None = None,
     evidence: Evidence | None = None,
+    past_decisions: Sequence[PastDecision] = (),
     on_event: Callable[[CouncilEvent], None] | None = None,
 ) -> BacktestResult:
-    """Convene the council as of a past date, then grade its call against what happened next."""
+    """Convene the council as of a past date, then grade its call against what happened next.
+
+    ``past_decisions`` are passed to ``run_council``; recall them for ``as_of`` so that none of
+    their outcomes postdates it.
+    """
     settings = settings or Settings()
     pkg = PackageRef.parse(package) if isinstance(package, str) else package
     async with AsyncExitStack() as stack:
@@ -144,6 +128,7 @@ async def backtest(
             intended_use=intended_use,
             settings=settings,
             evidence=evidence,
+            past_decisions=past_decisions,
             on_event=on_event,
         )
     return BacktestResult(

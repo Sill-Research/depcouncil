@@ -1,10 +1,11 @@
-"""Markdown views of council results, outcomes and backtests."""
+"""Markdown views of council results, outcomes, backtests and settled decisions."""
 
 from collections.abc import Sequence
 
 from depcouncil.council import CouncilResult
-from depcouncil.outcomes import BacktestResult, Outcome, Score
-from depcouncil.schemas import Rating
+from depcouncil.memory import MemoryEntry
+from depcouncil.outcomes import BacktestResult
+from depcouncil.schemas import Outcome, Rating, Score
 
 _RATINGS = {
     Rating.ADOPT: "Adopt",
@@ -34,6 +35,14 @@ def council_markdown(result: CouncilResult) -> str:
         lines += _bullets("Data gaps", report.data_gaps)
     lines += ["", "## Debate"]
     lines += [f"\n**{turn.speaker.capitalize()}:** {turn.argument}" for turn in result.debate]
+    lines += _bullets(
+        "Past decisions the chair considered",
+        [
+            f"{past.package} as of {past.analysis_date}: {_RATINGS[past.rating]}, outcome "
+            f"{'adverse' if past.adverse_outcome else 'fine'} ({past.score}). {past.lesson}"
+            for past in result.past_decisions
+        ],
+    )
     usage = result.usage
     models = ", ".join(f"{tier} {model}" for tier, model in result.models.items())
     lines += [
@@ -70,6 +79,20 @@ def backtest_markdown(results: Sequence[BacktestResult]) -> str:
     )
     lines += ["", f"**Score: {hits:g} / {len(results)}** (a partial counts as half)"]
     return "\n".join(lines)
+
+
+def settlement_markdown(entries: Sequence[MemoryEntry]) -> str:
+    sections: list[str] = []
+    for entry in entries:
+        if (settled := entry.settlement) is None:
+            continue
+        outcome = "adverse" if settled.outcome.adverse else "fine"
+        sections.append(
+            f"## {entry.package}, reviewed as of {entry.as_of}\n"
+            f"*{_RATINGS[entry.decision.rating]} · outcome {outcome} · {settled.score}*\n\n"
+            f"{settled.lesson}"
+        )
+    return "\n\n".join(sections)
 
 
 def _bullets(title: str, items: Sequence[str]) -> list[str]:
